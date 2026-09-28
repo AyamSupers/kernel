@@ -2062,11 +2062,8 @@ static int find_lowest_rq(struct task_struct *task)
 		return this_cpu;
 
 	cpu = cpumask_any_distribute(lowest_mask);
-	if (cpu < nr_cpu_ids) {
-		if (!has_pushable_tasks(cpu_rq(cpu)))
-			continue;
+	if (cpu < nr_cpu_ids)
 		return cpu;
-	}
 
 	return -1;
 }
@@ -2358,8 +2355,11 @@ static int rto_next_cpu(struct root_domain *rd)
 		if (cpu == this_cpu)
 			continue;
 
-		if (cpu < nr_cpu_ids)
+		if (cpu < nr_cpu_ids) {
+			if (!has_pushable_tasks(cpu_rq(cpu)))
+				continue;
 			return cpu;
+		}
 
 		rd->rto_cpu = -1;
 
