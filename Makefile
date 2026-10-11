@@ -841,7 +841,7 @@ ifdef CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE
 KBUILD_CFLAGS += -O2
 KBUILD_RUSTFLAGS += -Copt-level=2
 else ifdef CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE_O3
-KBUILD_CFLAGS += -O3 -mcpu=cortex-a725 -mtune=cortex-a725 \
+KBUILD_CFLAGS += -O3 -mcpu=cortex-a725 \
                   	 -mllvm -polly \
                   	 -mllvm -polly-ast-use-context \
                   	 -mllvm -polly-invariant-load-hoisting \
