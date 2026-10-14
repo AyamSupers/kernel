@@ -57,4 +57,35 @@ config CPQ_IOSCHED
 	help
 	  Command Priority Queueing I/O Scheduler
 
+choice
+	prompt "Default MQ I/O scheduler"
+	default MQ_DEADLINE_DEFAULT
+	help
+	  Select the I/O scheduler which will be used by default.
+
+	config MQ_DEADLINE_DEFAULT
+		bool "MQ Deadline"
+		depends on MQ_IOSCHED_DEADLINE
+
+	config MQ_KYBER_DEFAULT
+		bool "MQ Kyber"
+		depends on MQ_IOSCHED_KYBER
+
+	config BFQ_DEFAULT
+		bool "BFQ"
+		depends on IOSCHED_BFQ
+
+	config CPQ_DEFAULT
+		bool "CPQ"
+		depends on CPQ_IOSCHED
+
+	config MQ_ADIOS_DEFAULT
+		bool "ADIOS"
+		depends on MQ_IOSCHED_ADIOS=y
+
+	config NONE_DEFAULT
+		bool "NONE"
+
+endchoice
+
 endmenu
