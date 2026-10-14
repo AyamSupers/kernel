@@ -214,7 +214,8 @@ struct scan_control {
  */
 int vm_swappiness = 60;
 
-bool sysctl_workingset_protection __read_mostly = false;
+bool sysctl_workingset_protection __read_mostly =
+	IS_ENABLED(CONFIG_WORKINGSET_PROTECTION_ENABLED);
 u8 sysctl_anon_min_ratio  __read_mostly = CONFIG_ANON_MIN_RATIO;
 u8 sysctl_clean_low_ratio __read_mostly = CONFIG_CLEAN_LOW_RATIO;
 u8 sysctl_clean_min_ratio __read_mostly = CONFIG_CLEAN_MIN_RATIO;
