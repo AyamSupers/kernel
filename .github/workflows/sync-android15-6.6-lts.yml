@@ -84,8 +84,7 @@ jobs:
             cat /tmp/merge.log
             exit 1
           fi
-          UP_SHA=$(git rev-parse --short=12 "$LTS")
-          git commit -m "Merge $LTS_BRANCH ($UP_SHA) into $KERNEL_BRANCH"
+          git commit -m "Merge branch '$LTS_BRANCH' of https://android.googlesource.com/kernel/common into $KERNEL_BRANCH"
           git push origin "HEAD:$KERNEL_BRANCH"
           {
             echo "### Result"
