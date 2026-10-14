@@ -622,7 +622,18 @@ void elevator_init_mq(struct request_queue *q)
 	if (unlikely(q->elevator))
 		return;
 
-	if (!q->required_elevator_features)
+	if (IS_ENABLED(CONFIG_NONE_DEFAULT))
+		return;
+
+	if (IS_ENABLED(CONFIG_MQ_ADIOS_DEFAULT)) {
+		e = elevator_find_get(q, "adios");
+	} else if (IS_ENABLED(CONFIG_BFQ_DEFAULT)) {
+		e = elevator_find_get(q, "bfq");
+	} else if (IS_ENABLED(CONFIG_CPQ_DEFAULT)) {
+		e = elevator_find_get(q, "cpq");
+	} else if (IS_ENABLED(CONFIG_MQ_KYBER_DEFAULT)) {
+		e = elevator_find_get(q, "kyber");
+	} else if (!q->required_elevator_features)
 		e = elevator_get_default(q);
 	else
 		e = elevator_get_by_features(q);
