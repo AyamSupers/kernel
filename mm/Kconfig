@@ -1356,6 +1356,16 @@ config ANON_MIN_RATIO
 	  Setting this value too high (close to MemTotal) can result in
 	  inability to swap and can lead to early OOM under memory pressure.
 
+config WORKINGSET_PROTECTION_ENABLED
+	bool "Enable Working Set Protection (le9uo) by default"
+	depends on SYSCTL
+	default y
+	help
+	  Starts the kernel with vm.workingset_protection=1, so hard/soft
+	  protection of anon and clean file pages (per vm.anon_min_ratio,
+	  vm.clean_min_ratio, vm.clean_low_ratio) is active from the first
+	  reclaim cycle, with no userspace sysctl write required.
+
 config CLEAN_LOW_RATIO
 	int "Default value for vm.clean_low_ratio"
 	depends on SYSCTL
