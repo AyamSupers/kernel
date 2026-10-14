@@ -1,59 +1,110 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * Burst-Oriented Response Enhancer (BORE) CPU Scheduler
+ *
+ * Backport of upstream v7.0.0 (firelzrd/bore-scheduler,
+ * patches/stable/0001-linux6.12.37-bore-7.0.0.patch) to
+ * android15-6.6-lts (GKI, EEVDF).
+ *
+ * KABI note: the per-task BORE context is heap allocated and reached
+ * through sched_entity->bore, which reuses ANDROID_KABI_RESERVE slot 1
+ * of struct sched_entity (previously "struct sched_bore_stats
+ * *bore_stats" in the v5.9.7 backport). The slot stays an 8-byte
+ * pointer, so the KABI footprint is unchanged and no additional KABI
+ * slots are consumed. struct task_struct is untouched.
+ */
+#ifndef _KERNEL_SCHED_BORE_H
+#define _KERNEL_SCHED_BORE_H
 
 #include <linux/sched.h>
 #include <linux/sched/cputime.h>
+#include <linux/atomic.h>
+#include <linux/list.h>
+#include <linux/rcupdate.h>
+#include <linux/jump_label.h>
 
-#ifndef _LINUX_SCHED_BORE_H
-#define _LINUX_SCHED_BORE_H
-#define SCHED_BORE_VERSION "5.9.7"
+#define SCHED_BORE_AUTHOR   "Masahito Suzuki"
+#define SCHED_BORE_PROGNAME "BORE CPU Scheduler modification"
 
-#ifdef CONFIG_SCHED_BORE
+#define SCHED_BORE_VERSION  "7.0.0"
+
+#define BORE_BC_TIMESTAMP_SHIFT 16
+
+struct bore_bc {
+	union {
+		struct {
+			u64		timestamp:	48;
+			u64		penalty:	16;
+		};
+		u64			value;
+	};
+};
+
+struct bore_ctx {
+	u64				burst_time;
+	u64				credit_sleep;
+	u16				prev_penalty;
+	u16				curr_penalty;
+	u16				penalty;
+	bool			stop_update;
+	bool			futex_waiting;
+	struct bore_bc	subtree;
+	struct bore_bc	group;
+};
+
 extern u8   __read_mostly sched_bore;
-extern u8   __read_mostly sched_burst_exclude_kthreads;
-extern u8   __read_mostly sched_burst_smoothness_long;
-extern u8   __read_mostly sched_burst_smoothness_short;
-extern u8   __read_mostly sched_burst_fork_atavistic;
-extern u8   __read_mostly sched_burst_parity_threshold;
+DECLARE_STATIC_KEY_TRUE(sched_bore_key);
+extern u8   __read_mostly sched_burst_inherit_type;
+extern u8   __read_mostly sched_burst_smoothness;
 extern u8   __read_mostly sched_burst_penalty_offset;
 extern uint __read_mostly sched_burst_penalty_scale;
-extern uint __read_mostly sched_burst_cache_stop_count;
 extern uint __read_mostly sched_burst_cache_lifetime;
-extern uint __read_mostly sched_deadline_boost_mask;
+extern u8   __read_mostly sched_burst_protect_slice_lv;
 
-extern void update_burst_score(struct sched_entity *se);
-extern void update_burst_penalty(struct sched_entity *se);
+extern uint __read_mostly sched_credit_cap_us;
+DECLARE_STATIC_KEY_FALSE(sched_credit_key);
 
-extern void restart_burst(struct sched_entity *se);
-extern void restart_burst_rescale_deadline(struct sched_entity *se);
+extern void bore_note_sleep(struct task_struct *p, u64 now);
+extern u64  bore_credit_ns(struct task_struct *p);
 
-extern int sched_bore_update_handler(struct ctl_table *table, int write,
-	void __user *buffer, size_t *lenp, loff_t *ppos);
+DECLARE_STATIC_KEY_TRUE(sched_burst_protect_slice_cond_key);
+DECLARE_STATIC_KEY_FALSE(sched_burst_protect_slice_prefer_key);
 
-extern void sched_clone_bore(
-	struct task_struct *p, struct task_struct *parent, u64 clone_flags, u64 now);
+/*
+ * KABI-safe accessors: the bore context may be NULL if its allocation
+ * failed, in which case the task is treated as non-bursty / not waiting.
+ */
+static inline u8 bore_score(struct task_struct *p)
+{
+	struct bore_ctx *ctx = p->se.bore;
+	return ctx ? ctx->penalty >> 8 : 0;
+}
 
+static inline bool bore_futex_waiting(struct task_struct *p)
+{
+	struct bore_ctx *ctx = p->se.bore;
+	return ctx && ctx->futex_waiting;
+}
+
+extern u8   effective_prio_bore(struct task_struct *p);
+extern void update_curr_bore(struct task_struct *p, u64 delta_exec);
+extern void restart_burst_bore(struct task_struct *p);
+extern void restart_burst_rescale_deadline_bore(struct task_struct *p);
+extern void task_fork_bore(struct task_struct *p, struct task_struct *parent,
+							u64 clone_flags, u64 now);
+extern void sched_init_bore(void);
 extern void reset_task_bore(struct task_struct *p);
-extern void sched_bore_init(void);
+
+extern int  sched_bore_update_handler(struct ctl_table *table,
+	int write, void __user *buffer, size_t *lenp, loff_t *ppos);
+extern int  sched_burst_inherit_type_update_handler(struct ctl_table *table,
+	int write, void __user *buffer, size_t *lenp, loff_t *ppos);
+extern int  sched_burst_protect_slice_lv_update_handler(struct ctl_table *table,
+	int write, void __user *buffer, size_t *lenp, loff_t *ppos);
+extern int  sched_credit_cap_us_update_handler(struct ctl_table *table,
+	int write, void __user *buffer, size_t *lenp, loff_t *ppos);
 
 extern void reweight_entity(
 	struct cfs_rq *cfs_rq, struct sched_entity *se, unsigned long weight);
 
-struct sched_burst_cache {
-	u8				score;
-	u32				count;
-	u64				timestamp;
-    spinlock_t		lock;
-};
-
-struct sched_bore_stats  {
-	unsigned char	rel_deadline;
-	u64				burst_time;
-	u8				prev_burst_penalty;
-	u8				curr_burst_penalty;
-	u8				burst_penalty;
-	u8				burst_score;
-	struct sched_burst_cache child_burst;
-	struct sched_burst_cache group_burst;
-};
-
-#endif // CONFIG_SCHED_BORE
-#endif // _LINUX_SCHED_BORE_H
+#endif /* _KERNEL_SCHED_BORE_H */

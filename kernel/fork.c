@@ -103,17 +103,15 @@
 #include <linux/cpufreq_times.h>
 #include <linux/dma-buf.h>
 
-#ifdef CONFIG_USER_NS
-#include <linux/user_namespace.h>
-#endif
-
 #include <asm/pgalloc.h>
 #include <linux/uaccess.h>
 #include <asm/mmu_context.h>
 #include <asm/cacheflush.h>
 #include <asm/tlbflush.h>
 
+#ifdef CONFIG_SCHED_BORE
 #include <linux/sched/bore.h>
+#endif /* CONFIG_SCHED_BORE */
 
 #include <trace/events/sched.h>
 
@@ -641,7 +639,7 @@ void free_task(struct task_struct *tsk)
 	ftrace_graph_exit_task(tsk);
 	arch_release_task_struct(tsk);
 #ifdef CONFIG_SCHED_BORE
-	kfree(tsk->se.bore_stats);
+	kfree(tsk->se.bore);
 #endif
 	if (tsk->flags & PF_KTHREAD)
 		free_kthread_struct(tsk);
@@ -1163,9 +1161,9 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
 #ifdef CONFIG_SCHED_BORE
 	/*
 	 * arch_dup_task_struct() copies the parent task_struct verbatim, so avoid
-	 * sharing the parent's bore_stats pointer on early fork failure paths.
+	 * sharing the parent's bore pointer on early fork failure paths.
 	 */
-	tsk->se.bore_stats = NULL;
+	tsk->se.bore = NULL;
 #endif
 
 	err = alloc_thread_stack_node(tsk, node);
@@ -1178,8 +1176,8 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
 	account_kernel_stack(tsk, 1);
 
 #ifdef CONFIG_SCHED_BORE
-	tsk->se.bore_stats = kzalloc(sizeof(struct sched_bore_stats), GFP_KERNEL);
-	if (unlikely(!tsk->se.bore_stats))
+	tsk->se.bore = kzalloc(sizeof(struct bore_ctx), GFP_KERNEL);
+	if (unlikely(!tsk->se.bore))
 		goto free_stack;
 #endif
 
@@ -1266,8 +1264,8 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
 
 free_stack:
 	#ifdef CONFIG_SCHED_BORE
-	kfree(tsk->se.bore_stats);
-	tsk->se.bore_stats = NULL;
+	kfree(tsk->se.bore);
+	tsk->se.bore = NULL;
 	#endif
 	exit_task_stack_account(tsk);
 	free_thread_stack(tsk);
@@ -2713,7 +2711,7 @@ __latent_entropy struct task_struct *copy_process(
 
 	#ifdef CONFIG_SCHED_BORE
 	if (likely(p->pid))
-		sched_clone_bore(p, current, clone_flags, p->start_time);
+		task_fork_bore(p, current, clone_flags, p->start_time);
 	#endif // CONFIG_SCHED_BORE
 
 	/*
@@ -2789,7 +2787,11 @@ __latent_entropy struct task_struct *copy_process(
 			 */
 			p->signal->has_child_subreaper = p->real_parent->signal->has_child_subreaper ||
 							 p->real_parent->signal->is_child_subreaper;
+#ifdef CONFIG_SCHED_BORE
+			list_add_tail_rcu(&p->sibling, &p->real_parent->children);
+#else /* !CONFIG_SCHED_BORE */
 			list_add_tail(&p->sibling, &p->real_parent->children);
+#endif /* CONFIG_SCHED_BORE */
 			list_add_tail_rcu(&p->tasks, &init_task.tasks);
 			attach_pid(p, PIDTYPE_TGID);
 			attach_pid(p, PIDTYPE_PGID);

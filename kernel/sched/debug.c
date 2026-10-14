@@ -11,7 +11,9 @@
  * This allows printing both to /proc/sched_debug and
  * to the console
  */
+#ifdef CONFIG_SCHED_BORE
 #include <linux/sched/bore.h>
+#endif /* CONFIG_SCHED_BORE */
 #define SEQ_printf(m, x...)			\
  do {						\
 	if (m)					\
@@ -652,8 +654,7 @@ print_task(struct seq_file *m, struct rq *rq, struct task_struct *p)
 		SPLIT_NS(schedstat_val_or_zero(p->stats.sum_block_runtime)));
 
 #ifdef CONFIG_SCHED_BORE
-	if (likely(p->se.bore_stats))
-		SEQ_printf(m, " %2d", p->se.bore_stats->burst_score);
+	SEQ_printf(m, " %2d", bore_score(p));
 #endif // CONFIG_SCHED_BORE
 #ifdef CONFIG_NUMA_BALANCING
 	SEQ_printf(m, " %d %d", task_node(p), task_numa_group_id(p));
@@ -1134,8 +1135,7 @@ void proc_sched_show_task(struct task_struct *p, struct pid_namespace *ns,
 	P(se.load.weight);
 #ifdef CONFIG_SMP
 #ifdef CONFIG_SCHED_BORE
-	if (likely(p->se.bore_stats))
-		P(se.bore_stats->burst_score);
+	__PS("bore.score", bore_score(p));
 #endif // CONFIG_SCHED_BORE
 	P(se.avg.load_sum);
 	P(se.avg.runnable_sum);
