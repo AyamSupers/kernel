@@ -1760,8 +1760,17 @@ static void __queue_work(int cpu, struct workqueue_struct *wq,
 	 * queues a new work item to a wq after destroy_workqueue(wq).
 	 */
 	if (unlikely(wq->flags & (__WQ_DESTROYING | __WQ_DRAINING) &&
-		     WARN_ON_ONCE(!is_chained_work(wq))))
+		WARN_ON_ONCE(!is_chained_work(wq)))) {
+		/*
+		 * State on entry: PENDING is set, work is off-queue (no
+		 * insert_work() has run).
+		 *
+		 * Returning without clearing PENDING would leave the work
+		 * in a weird state (PENDING=1, PWQ=0, entry empty).
+		 */
+		set_work_pool_and_clear_pending(work, get_work_pool_id(work));
 		return;
+	}
 	rcu_read_lock();
 retry:
 	/* pwq which will be used unless @work is executing elsewhere */
@@ -6555,6 +6564,25 @@ static void wq_watchdog_timer_fn(struct timer_list *unused)
 
 		/* did we stall? */
 		if (time_after(now, ts + thresh)) {
+			/*
+			 * Do a lockless check first. On weakly ordered
+			 * architectures, the lockless check can observe a
+			 * reordering between worklist insert_work() and
+			 * watchdog_ts update from __queue_work(). Since
+			 * __queue_work() is a much hotter path than the timer
+			 * function, we handle false positive here by reading
+			 * watchdog_ts again with pool->lock held.
+			 */
+			scoped_guard(raw_spinlock_irqsave, &pool->lock) {
+				pool_ts = pool->watchdog_ts;
+				if (time_after(pool_ts, touched))
+					ts = pool_ts;
+				else
+					ts = touched;
+			}
+			if (!time_after(now, ts + thresh))
+				continue;
+
 			lockup_detected = true;
 			if (pool->cpu >= 0) {
 				pool->cpu_stall = true;
