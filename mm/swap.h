@@ -19,6 +19,10 @@ void swap_write_unplug(struct swap_iocb *sio);
 int swap_writepage(struct page *page, struct writeback_control *wbc);
 void __swap_writepage(struct page *page, struct writeback_control *wbc);
 
+/* kcompressd: offload compression/swapout from kswapd (mm/page_io.c) */
+void kcompressd_run(int nid);
+void kcompressd_stop(int nid);
+
 /* linux/mm/swap_state.c */
 /* One swap address space for each 64M swap space */
 #define SWAP_ADDRESS_SPACE_SHIFT	14
@@ -95,6 +99,14 @@ static inline struct page *swapin_readahead(swp_entry_t swp, gfp_t gfp_mask,
 static inline int swap_writepage(struct page *p, struct writeback_control *wbc)
 {
 	return 0;
+}
+
+static inline void kcompressd_run(int nid)
+{
+}
+
+static inline void kcompressd_stop(int nid)
+{
 }
 
 static inline void swapcache_clear(struct swap_info_struct *si, swp_entry_t entry, int nr)
