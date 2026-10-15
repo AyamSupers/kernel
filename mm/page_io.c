@@ -25,6 +25,8 @@
 #include <linux/sched/task.h>
 #include <linux/delayacct.h>
 #include <linux/zswap.h>
+#include <linux/kthread.h>
+#include <linux/kfifo.h>
 #include "swap.h"
 
 #undef CREATE_TRACE_POINTS
@@ -176,6 +178,186 @@ bad_bmap:
 }
 
 /*
+ * kcompressd: offload compression/swapout from kswapd (mm/page_io.c)
+ *
+ * Backport of firelzrd/kcompressd-unofficial 0.5 (itself built on
+ * Kcompressd by Qun-Wei Lin, MediaTek) to 6.6.
+ *
+ * Per-node state is kept in a private static array here instead of
+ * inside pg_data_t: pg_data_t is part of this kernel's frozen GKI
+ * ABI surface and has only one ANDROID_KABI_RESERVE slot left, far
+ * too small for a waitqueue + kfifo + lock + task pointer.  Keeping
+ * the new state entirely outside pg_data_t means its layout, and
+ * therefore vendor .ko compatibility, is untouched.
+ */
+#define KCOMPRESS_FIFO_SIZE 256
+
+struct kcompressd_data {
+	wait_queue_head_t wait;
+	struct task_struct *task;
+	struct kfifo fifo;
+	spinlock_t fifo_lock;
+};
+
+static struct kcompressd_data kcompressd_nodes[MAX_NUMNODES];
+
+int vm_kcompressd = 24;
+
+/*
+ * do_swapout() - write a folio to swap, mirroring the synchronous
+ * swap_writepage() path below (including its zswap writeback dance).
+ * The folio must be locked on entry; it is unlocked and its extra
+ * reference dropped before returning.
+ */
+static inline void do_swapout(struct folio *folio)
+{
+	struct writeback_control wbc = {
+		.sync_mode = WB_SYNC_NONE,
+		.nr_to_write = SWAP_CLUSTER_MAX,
+		.range_start = 0,
+		.range_end = LLONG_MAX,
+		.for_reclaim = 1,
+	};
+
+	if (zswap_store(folio)) {
+		folio_start_writeback(folio);
+		folio_unlock(folio);
+		folio_end_writeback(folio);
+	} else {
+		/*
+		 * Unlocks the folio internally and fires the android
+		 * vendor hooks (trace_android_vh_swap_writepage_*).
+		 */
+		__swap_writepage(&folio->page, &wbc);
+	}
+
+	folio_put(folio);
+}
+
+/*
+ * kcompressd_store() - try to hand a folio off to kcompressd instead
+ * of compressing/writing it synchronously on the kswapd stack.
+ * Returns true if the folio was queued (or synchronously flushed as
+ * part of making room in the queue); false means the caller must
+ * fall back to the normal synchronous path.
+ */
+static bool kcompressd_store(struct folio *folio)
+{
+	int nid = folio_nid(folio);
+	struct kcompressd_data *kd = &kcompressd_nodes[nid];
+	unsigned int ret, sysctl_kcompressd = READ_ONCE(vm_kcompressd);
+	struct folio *head = NULL;
+	unsigned long flags;
+
+	/* Only kswapd may offload; direct reclaim stays synchronous */
+	if (!current_is_kswapd())
+		return false;
+
+	if (!sysctl_kcompressd || unlikely(!kd->task))
+		return false;
+
+	/* Only anon folios go through this path */
+	if (!folio_test_anon(folio))
+		return false;
+
+	/*
+	 * Only worth offloading for synchronous-IO swap backends (zram).
+	 * zswap eligibility itself is decided inside zswap_store(),
+	 * called from do_swapout() on the kcompressd thread; 6.6 has no
+	 * zswap_is_enabled() / mem_cgroup_zswap_writeback_enabled()
+	 * helpers, so there is no separate zswap pre-check here.
+	 */
+	if (!data_race(swp_swap_info(folio->swap)->flags & SWP_SYNCHRONOUS_IO))
+		return false;
+
+	/*
+	 * If the FIFO is nearly full, synchronously flush the oldest
+	 * entry first so ordering/freshness is preserved instead of
+	 * silently dropping to synchronous mode for the new folio.
+	 */
+	spin_lock_irqsave(&kd->fifo_lock, flags);
+	if (kfifo_len(&kd->fifo) >= sysctl_kcompressd * sizeof(folio) &&
+			unlikely(!kfifo_out(&kd->fifo, &head, sizeof(folio)))) {
+		spin_unlock_irqrestore(&kd->fifo_lock, flags);
+		return false;
+	}
+	spin_unlock_irqrestore(&kd->fifo_lock, flags);
+
+	folio_get(folio);
+	ret = kfifo_in(&kd->fifo, &folio, sizeof(folio));
+	if (likely(ret))
+		wake_up_interruptible(&kd->wait);
+	else
+		folio_put(folio);
+
+	if (head)
+		do_swapout(head);
+
+	return ret;
+}
+
+static int kcompressd(void *p)
+{
+	int nid = (long)p;
+	struct kcompressd_data *kd = &kcompressd_nodes[nid];
+	struct folio *folio;
+
+	/*
+	 * PF_MEMALLOC: allow allocating memory (compression buffers)
+	 * without being throttled by the same reclaim we're helping.
+	 * PF_KSWAPD: identify as kswapd-class to the rest of mm/.
+	 */
+	current->flags |= PF_MEMALLOC | PF_KSWAPD;
+
+	while (!kthread_should_stop()) {
+		wait_event_interruptible(kd->wait, !kfifo_is_empty(&kd->fifo));
+
+		while (kfifo_out_locked(&kd->fifo, &folio, sizeof(folio), &kd->fifo_lock))
+			do_swapout(folio);
+	}
+	return 0;
+}
+
+void kcompressd_run(int nid)
+{
+	struct kcompressd_data *kd = &kcompressd_nodes[nid];
+	int ret;
+
+	if (kd->task)
+		return;
+
+	ret = kfifo_alloc(&kd->fifo, KCOMPRESS_FIFO_SIZE * sizeof(struct folio *),
+			   GFP_KERNEL);
+	if (ret) {
+		pr_err("kcompressd: fail to kfifo_alloc on node %d\n", nid);
+		return;
+	}
+	init_waitqueue_head(&kd->wait);
+	spin_lock_init(&kd->fifo_lock);
+
+	kd->task = kthread_run(kcompressd, (void *)(long)nid, "kcompressd%d", nid);
+	if (IS_ERR(kd->task)) {
+		pr_err("kcompressd: failed to start on node %d, ret=%ld\n",
+			nid, PTR_ERR(kd->task));
+		kd->task = NULL;
+		kfifo_free(&kd->fifo);
+	} else {
+		pr_info("kcompressd: started on node %d\n", nid);
+	}
+}
+
+void kcompressd_stop(int nid)
+{
+	struct kcompressd_data *kd = &kcompressd_nodes[nid];
+
+	if (kd->task) {
+		kthread_stop(kd->task);
+		kd->task = NULL;
+		kfifo_free(&kd->fifo);
+	}
+}
+
+/*
  * We may have stale swap cache pages in memory: notice
  * them here and get rid of the unnecessary final write.
  */
@@ -198,6 +380,14 @@ int swap_writepage(struct page *page, struct writeback_control *wbc)
 		folio_unlock(folio);
 		return ret;
 	}
+
+	/*
+	 * Compression (zswap/zram) may block on rmap/unmap; try to hand
+	 * the folio off to kcompressd when possible.
+	 */
+	if (kcompressd_store(folio))
+		return 0;
+
 	if (zswap_store(folio)) {
 		folio_start_writeback(folio);
 		folio_unlock(folio);
