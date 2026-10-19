@@ -70,6 +70,7 @@ jobs:
         run: |
           set -euo pipefail
           LTS="refs/remotes/aosp/$LTS_BRANCH"
+          UP_SHA=$(git rev-parse --short=12 "$LTS")
           git merge --no-ff --no-commit "$LTS" > /tmp/merge.log 2>&1 || true
           CONFLICTS=$(git diff --name-only --diff-filter=U || true)
           if [ -n "$CONFLICTS" ]; then
@@ -84,8 +85,7 @@ jobs:
             cat /tmp/merge.log
             exit 1
           fi
-          UP_SHA=$(git rev-parse --short=12 "$LTS")
-          git commit -m "Merge $LTS_BRANCH ($UP_SHA) into $KERNEL_BRANCH"
+          git commit -m "Merge branch '$LTS_BRANCH' of https://android.googlesource.com/kernel/common into $KERNEL_BRANCH"
           git push origin "HEAD:$KERNEL_BRANCH"
           {
             echo "### Result"
