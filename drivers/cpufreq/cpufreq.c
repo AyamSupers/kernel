@@ -898,10 +898,6 @@ static ssize_t store_scaling_governor(struct cpufreq_policy *policy,
 	} else {
 		struct cpufreq_governor *new_gov;
 
-		/* Refuse to switch away from schedutil */
-		if (strcmp(str_governor, "schedutil"))
-			return count;
-
 		new_gov = cpufreq_parse_governor(str_governor);
 		if (!new_gov)
 			return -EINVAL;
